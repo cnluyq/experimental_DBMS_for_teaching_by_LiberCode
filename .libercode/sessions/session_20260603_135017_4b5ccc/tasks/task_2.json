@@ -1,0 +1,14 @@
+{
+  "id": 2,
+  "subject": "实现存储引擎基础（文件管理和页分配）",
+  "description": "实现数据库文件管理核心功能：\n- 文件创建、打开、关闭\n- 页分配和回收（固定大小页，如4KB）\n- 页读写抽象层\n- 页类型定义（数据页、索引页、元数据页）\n- 简单的空闲页管理\n依赖：架构设计文档",
+  "status": "completed",
+  "blockedBy": [],
+  "blocks": [
+    9
+  ],
+  "owner": "storage_engineer",
+  "worktree": "",
+  "required_role": "backend",
+  "assigned_to": "storage_engineer"
+}

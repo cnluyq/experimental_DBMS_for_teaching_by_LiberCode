@@ -1,0 +1,14 @@
+{
+  "id": 3,
+  "subject": "实现缓冲区管理器",
+  "description": "实现经典的LRU缓冲区池：\n- 固定数量的缓冲区帧\n- LRU置换策略\n- 页的读取和写入\n- 脏页管理\n- 与存储引擎的接口\n依赖：存储引擎基础完成",
+  "status": "completed",
+  "blockedBy": [],
+  "blocks": [
+    9
+  ],
+  "owner": "",
+  "worktree": "",
+  "required_role": "backend",
+  "assigned_to": "buffer_manager"
+}

@@ -1,0 +1,12 @@
+{
+  "id": 11,
+  "subject": "协助完成B+树索引持久化（并行开发）",
+  "description": "协助index_manager加速任务#5：\n- 实现持久化insert（含页面分配、节点分裂）\n- 实现持久化delete（含页面释放、节点合并）\n- 节点缓存管理\n- 与缓冲区管理器集成\n\n不包含删除算法bug修复（由index_manager负责）和WAL集成。",
+  "status": "completed",
+  "blockedBy": [],
+  "blocks": [],
+  "owner": "",
+  "worktree": "",
+  "required_role": "backend",
+  "assigned_to": "index_manager2"
+}

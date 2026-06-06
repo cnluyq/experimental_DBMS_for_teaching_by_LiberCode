@@ -1,0 +1,33 @@
+# Storage Engine Only - Test Build (without WAL/Transaction)
+
+CXX = g++
+CXXFLAGS = -std=c++17 -Wall -Wextra -Wpedantic -O2 -g
+INC_DIR = src/include
+
+# Storage engine sources only (page, file_manager, page_allocator, storage_engine)
+STORAGE_SRCS = src/core/page.cpp src/core/file_manager.cpp \
+               src/core/page_allocator.cpp src/core/storage_engine.cpp
+
+TARGET = libdb_storage.a
+TEST_TARGET = test_storage
+
+all: $(TARGET)
+
+$(TARGET): $(STORAGE_SRCS)
+	$(CXX) $(CXXFLAGS) -I$(INC_DIR) -c src/core/page.cpp -o page.o
+	$(CXX) $(CXXFLAGS) -I$(INC_DIR) -c src/core/file_manager.cpp -o file_manager.o
+	$(CXX) $(CXXFLAGS) -I$(INC_DIR) -c src/core/page_allocator.cpp -o page_allocator.o
+	$(CXX) $(CXXFLAGS) -I$(INC_DIR) -c src/core/storage_engine.cpp -o storage_engine.o
+	ar rcs $(TARGET) page.o file_manager.o page_allocator.o storage_engine.o
+	echo "Static library $(TARGET) built"
+
+test: $(TARGET)
+	$(CXX) $(CXXFLAGS) -I$(INC_DIR) tests/test_storage.cpp -L. -ldb_storage -o $(TEST_TARGET)
+
+run-test: test
+	./$(TEST_TARGET)
+
+clean:
+	rm -f *.o *.a $(TEST_TARGET) core.* test_db.dat
+
+.PHONY: all test run-test clean

@@ -1,0 +1,12 @@
+{
+  "id": 1,
+  "subject": "制定实验性教学DBMS详细设计方案",
+  "description": "创建完整的技术设计方案文档，包括：\n1. 系统架构设计（模块划分和接口定义）\n2. 数据模型（表、行、页、文件结构）\n3. SQL语法支持范围（教学的子集）\n4. 模块依赖关系和数据流\n5. 开发规范和编码标准\n需要涵盖：存储管理、缓冲区管理、WAL日志、B+树索引、SQL解析、查询执行、事务管理等核心模块的设计",
+  "status": "completed",
+  "blockedBy": [],
+  "blocks": [],
+  "owner": "architect_teammate",
+  "worktree": "",
+  "required_role": "architect",
+  "assigned_to": "architect_teammate"
+}

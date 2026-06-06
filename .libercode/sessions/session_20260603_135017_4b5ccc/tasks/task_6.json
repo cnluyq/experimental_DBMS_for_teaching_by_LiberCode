@@ -1,0 +1,15 @@
+{
+  "id": 6,
+  "subject": "实现SQL解析器（教学子集）",
+  "description": "实现简化的SQL解析器，支持教学子集：\n- DDL: CREATE TABLE, DROP TABLE\n- DML: SELECT, INSERT, UPDATE, DELETE（单表，简单WHERE条件）\n- 事务: BEGIN, COMMIT, ROLLBACK\n使用lex/yacc风格或PLY库实现\n输出：抽象语法树（AST）\n依赖：架构设计文档",
+  "status": "completed",
+  "blockedBy": [],
+  "blocks": [
+    7,
+    9
+  ],
+  "owner": "sql_parser",
+  "worktree": "",
+  "required_role": "frontend",
+  "assigned_to": "sql_parser"
+}

@@ -1,0 +1,12 @@
+{
+  "id": 10,
+  "subject": "编写项目README和教学文档",
+  "description": "创建项目主README文档：\n- 项目介绍和目标（教学用实验性DBMS）\n- 系统架构概览\n- 核心模块说明\n- 如何使用和运行\n- 学习路径建议\n- 代码组织说明\n- 扩展点和建议的改进项目\n- 参考文献\n\n这是重要的教学材料，即使代码未完成也可以先创建框架。",
+  "status": "completed",
+  "blockedBy": [],
+  "blocks": [],
+  "owner": "",
+  "worktree": "",
+  "required_role": "frontend",
+  "assigned_to": "doc_writer"
+}

@@ -1,0 +1,14 @@
+{
+  "id": 4,
+  "subject": "实现WAL（Write-Ahead Logging）日志系统",
+  "description": "实现预写式日志用于崩溃恢复：\n- WAL文件格式和页结构\n- Log Record类型定义（UPDATE、COMMIT、ABORT等）\n- log写入和持久化保证（fsync）\n- 检查点机制\n- 崩溃恢复流程\n依赖：存储引擎基础完成",
+  "status": "completed",
+  "blockedBy": [],
+  "blocks": [
+    9
+  ],
+  "owner": "wal_engineer",
+  "worktree": "",
+  "required_role": "backend",
+  "assigned_to": "wal_engineer"
+}

@@ -1,0 +1,831 @@
+"""
+预写式日志系统 (Write-Ahead Logging) - Python教学版本
+
+本模块演示WAL的核心原理，包括：
+1. 日志记录类型和格式
+2. 日志写入和持久化（fsync模拟）
+3. 检查点机制
+4. 崩溃恢复流程（ARIES简化版）
+
+代码简洁清晰，适合教学使用。
+"""
+
+import struct
+import os
+import json
+from enum import IntEnum
+from typing import Optional, List, Dict, Any, BinaryIO
+from datetime import datetime
+
+
+class LogType(IntEnum):
+    """日志记录类型"""
+    UPDATE = 1     # 更新操作
+    INSERT = 2     # 插入操作
+    DELETE = 3     # 删除操作
+    COMMIT = 4     # 事务提交
+    ABORT = 5      # 事务中止
+    CHECKPOINT = 6 # 检查点
+
+
+class LogRecord:
+    """日志记录（通用格式）"""
+    
+    # 日志头格式: LSN(8), TID(4), Type(1), Size(4), PrevLSN(8)
+    HEADER_FORMAT = 'QIIBQ'  # Q: uint64, I: uint32, B: uint8
+    HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
+    
+    def __init__(self, log_type: LogType, tid: int, payload: bytes = b'', prev_lsn: int = 0):
+        self.lsn: int = 0  # 稍后分配
+        self.tid: int = tid
+        self.type: LogType = log_type
+        self.payload: bytes = payload
+        self.prev_lsn: int = prev_lsn
+        
+    def serialize(self) -> bytes:
+        """序列化日志记录"""
+        # 构建头
+        header = struct.pack(
+            self.HEADER_FORMAT,
+            self.lsn,
+            self.tid,
+            int(self.type),
+            len(self.payload),
+            self.prev_lsn
+        )
+        return header + self.payload
+    
+    @classmethod
+    def deserialize(cls, data: bytes) -> 'LogRecord':
+        """从字节流反序列化日志记录"""
+        if len(data) < cls.HEADER_SIZE:
+            raise ValueError("Data too short for log record")
+        
+        # 解析头
+        lsn, tid, log_type_int, size, prev_lsn = struct.unpack(cls.HEADER_FORMAT, data[:cls.HEADER_SIZE])
+        
+        record = cls(
+            log_type=LogType(log_type_int),
+            tid=tid,
+            payload=data[cls.HEADER_SIZE:cls.HEADER_SIZE+size],
+            prev_lsn=prev_lsn
+        )
+        record.lsn = lsn
+        return record
+    
+    def __repr__(self) -> str:
+        return f"LogRecord(lsn={self.lsn}, tid={self.tid}, type={self.type.name}, size={len(self.payload)})"
+
+
+class WALManager:
+    """WAL管理器 - 简化版，用于教学演示"""
+    
+    def __init__(self, wal_file: str = 'wal.log', page_size: int = 4096):
+        self.wal_file_path = wal_file
+        self.page_size = page_size
+        self.next_lsn: int = 1
+        self.last_checkpoint_lsn: int = 0
+        self.active_transactions: Dict[int, int] = {}  # tid -> last_lsn
+        self.file: Optional[BinaryIO] = None
+        self.dirty_page_table: Dict[int, int] = {}  # page_id -> rec_lsn
+        
+        # 统计
+        self.stats = {
+            'logs_written': 0,
+            'fsync_calls': 0,
+            'checkpoints': 0
+        }
+    
+    def open(self) -> bool:
+        """打开WAL文件（如果存在则追加，否则新建）"""
+        mode = 'ab+' if os.path.exists(self.wal_file_path) else 'wb+'
+        try:
+            self.file = open(self.wal_file_path, mode)
+            # 如果文件已存在，读取最后一条记录的LSN
+            if mode == 'ab+':
+                self._recover_lsn_from_file()
+            return True
+        except Exception as e:
+            print(f"Failed to open WAL file: {e}")
+            return False
+    
+    def close(self):
+        """关闭WAL文件"""
+        if self.file:
+            self.file.close()
+            self.file = None
+    
+    def _recover_lsn_from_file(self):
+        """从现有WAL文件恢复next_lsn"""
+        # 简化：读取文件末尾，找到最大的LSN
+        try:
+            self.file.seek(0, os.SEEK_END)
+            file_size = self.file.tell()
+            
+            # 从文件末尾向前扫描
+            pos = file_size
+            max_lsn = 0
+            
+            while pos > 0:
+                # 向前跳一个日志记录（需要知道记录大小）
+                # 简化：假设记录至少HEADER_SIZE，尝试读取头
+                read_size = min(1024, pos)
+                if pos - read_size < 0:
+                    read_size = pos
+                self.file.seek(pos - read_size)
+                chunk = self.file.read(read_size)
+                
+                # 在chunk中搜索有效的日志头（从后向前）
+                for i in range(len(chunk) - LogRecord.HEADER_SIZE, -1, -1):
+                    try:
+                        header_data = chunk[i:i+LogRecord.HEADER_SIZE]
+                        lsn, tid, log_type, size, prev_lsn = struct.unpack(
+                            LogRecord.HEADER_FORMAT, header_data)
+                        # 基本验证：LSN应该递增且合理
+                        if lsn > 0 and size <= 4096:  # 合理的日志大小
+                            if lsn > max_lsn:
+                                max_lsn = lsn
+                            break
+                    except:
+                        continue
+                
+                if max_lsn > 0:
+                    break
+                pos -= read_size
+            
+            self.next_lsn = max_lsn + 1
+            print(f"Recovered next_lsn = {self.next_lsn} from existing WAL")
+        except Exception as e:
+            print(f"Failed to recover LSN: {e}")
+            self.next_lsn = 1
+    
+    def _count_logs_in_file(self) -> int:
+        """统计WAL文件中的日志数量（用于测试）"""
+        try:
+            with open(self.wal_file_path, 'rb') as f:
+                count = 0
+                while True:
+                    header = f.read(LogRecord.HEADER_SIZE)
+                    if not header or len(header) < LogRecord.HEADER_SIZE:
+                        break
+                    lsn, tid, log_type, size, prev_lsn = struct.unpack(
+                        LogRecord.HEADER_FORMAT, header)
+                    f.read(size)  # 跳过数据
+                    count += 1
+                return count
+        except:
+            return 0
+    
+    def allocate_lsn(self) -> int:
+        lsn = self.next_lsn
+        self.next_lsn += 1
+        return lsn
+    
+    def append(self, tid: int, log_type: LogType, payload: bytes = b'', prev_lsn: int = 0) -> int:
+        """追加日志记录（Write-Ahead核心）"""
+        if not self.file:
+            raise RuntimeError("WAL file not open")
+        
+        record = LogRecord(log_type, tid, payload, prev_lsn)
+        record.lsn = self.allocate_lsn()
+        
+        # 序列化并写入
+        data = record.serialize()
+        self.file.write(data)
+        self.file.flush()  # 刷新到操作系统缓冲区
+        
+        # 模拟fsync - 强制持久化到磁盘
+        os.fsync(self.file.fileno())
+        
+        # 更新事务状态
+        self.active_transactions[tid] = record.lsn
+        
+        # 对于数据修改操作，更新脏页表
+        if log_type in (LogType.UPDATE, LogType.INSERT, LogType.DELETE):
+            if payload:
+                page_id = struct.unpack('I', payload[:4])[0]
+                self.dirty_page_table[page_id] = record.lsn
+        
+        self.stats['logs_written'] += 1
+        return record.lsn
+    
+    def force(self, lsn: Optional[int] = None):
+        """强制持久化（fsync）"""
+        if self.file:
+            self.file.flush()
+            os.fsync(self.file.fileno())
+            self.stats['fsync_calls'] += 1
+    
+    # 事务相关方法
+    def begin_transaction(self, tid: int):
+        """开始事务"""
+        self.active_transactions[tid] = 0
+    
+    def commit(self, tid: int):
+        """提交事务"""
+        last_lsn = self.active_transactions.get(tid, 0)
+        self.append(tid, LogType.COMMIT, b'', last_lsn)
+        del self.active_transactions[tid]
+    
+    def abort(self, tid: int):
+        """中止事务"""
+        last_lsn = self.active_transactions.get(tid, 0)
+        self.append(tid, LogType.ABORT, b'', last_lsn)
+        del self.active_transactions[tid]
+    
+    # 检查点相关
+    def create_checkpoint(self, active_transactions: Optional[List[int]] = None) -> int:
+        """创建检查点"""
+        if active_transactions is None:
+            active_transactions = list(self.active_transactions.keys())
+        
+        # 构建检查点数据
+        checkpoint_data = {
+            'dirty_pages': list(self.dirty_page_table.items()),  # [(page_id, rec_lsn), ...]
+            'active_transactions': active_transactions,
+            'timestamp': datetime.now().isoformat(),
+            'next_lsn': self.next_lsn
+        }
+        
+        payload = json.dumps(checkpoint_data).encode('utf-8')
+        
+        # 写入CHECKPOINT记录
+        lsn = self.append(0, LogType.CHECKPOINT, payload)
+        self.last_checkpoint_lsn = lsn
+        self.stats['checkpoints'] += 1
+        
+        print(f"Checkpoint created at LSN {lsn}, dirty pages: {len(self.dirty_page_table)}")
+        return lsn
+    
+    # 崩溃恢复（ARIES简化版）
+    def recover(self) -> Dict[str, Any]:
+        """执行崩溃恢复
+        
+        返回恢复统计信息
+        """
+        print("=" * 50)
+        print("Starting WAL Recovery...")
+        print("=" * 50)
+        
+        if not os.path.exists(self.wal_file_path):
+            print("No WAL file found, starting fresh")
+            return {'status': 'fresh'}
+        
+        # 阶段1: 分析 (Analysis)
+        checkpoint_info, active_logs_for_undo = self._analyze_wal()
+        
+        # 阶段2: 重做 (Redo)
+        # 从检查点的dirty_page_table中最小的rec_lsn开始
+        redo_start_lsn = 0
+        if checkpoint_info['dirty_page_table']:
+            redo_start_lsn = min(checkpoint_info['dirty_page_table'].values())
+        print(f"Redo starting from LSN {redo_start_lsn}")
+        
+        redo_count = 0
+        with open(self.wal_file_path, 'rb') as f:
+            while True:
+                pos = f.tell()
+                header_bytes = f.read(LogRecord.HEADER_SIZE)
+                if not header_bytes or len(header_bytes) < LogRecord.HEADER_SIZE:
+                    break
+                
+                try:
+                    lsn, tid, log_type_int, size, prev_lsn = struct.unpack(
+                        LogRecord.HEADER_FORMAT, header_bytes)
+                    
+                    # 只有大于等于redo_start_lsn的日志才需要重做
+                    if lsn >= redo_start_lsn:
+                        payload = f.read(size) if size > 0 else b''
+                        record = LogRecord(
+                            LogType(log_type_int), tid, payload, prev_lsn
+                        )
+                        record.lsn = lsn
+                        
+                        # 对于数据修改操作，重做（幂等：可以重复应用）
+                        if log_type_int in (LogType.UPDATE, LogType.INSERT, LogType.DELETE):
+                            if payload and hasattr(self, '_apply_log_to_page'):
+                                self._apply_log_to_page(record)
+                                redo_count += 1
+                                print(f"  Redo: LSN={lsn}, type={LogType(log_type_int).name}, tid={tid}")
+                    
+                    else:
+                        # 跳过不需要重做的记录的payload
+                        f.read(size) if size > 0 else None
+                        
+                except Exception as e:
+                    print(f"Error during redo at position {pos}: {e}")
+                    break
+        
+        print(f"Redo applied {redo_count} log records")
+        
+        # 阶段3: 撤销 (Undo)
+        # 对未提交事务，按LSN逆序撤销
+        print("\nUndo phase:")
+        undo_count = 0
+        
+        # 按LSN逆序排序需要撤销的日志
+        active_logs_for_undo.sort(key=lambda x: x.lsn, reverse=True)
+        
+        for log in active_logs_for_undo:
+            if hasattr(self, '_undo_log'):
+                self._undo_log(log)
+                undo_count += 1
+                print(f"  Undo: LSN={log.lsn}, type={log.type.name}, tid={log.tid}")
+        
+        print(f"Undo rolled back {undo_count} log records")
+        
+        stats = {
+            'status': 'recovered',
+            'checkpoint_lsn': checkpoint_info.get('checkpoint_lsn', 0),
+            'dirty_pages_recovered': len(checkpoint_info.get('dirty_page_table', {})),
+            'active_txns_rolled_back': undo_count,
+            'logs_redone': redo_count,
+            'total_logs_processed': redo_count + undo_count
+        }
+        
+        print(f"\nRecovery complete: {stats}")
+        print("=" * 50)
+        
+        # 恢复后重置状态（模拟系统重启）
+        # 注意：在实际数据库中，这里应该根据恢复后的状态重新构建脏页表
+        self.dirty_page_table = checkpoint_info.get('dirty_page_table', {}).copy()
+        self.active_transactions.clear()  # 所有未提交事务都已撤销
+        self.next_lsn = checkpoint_info.get('next_lsn', 1)
+        
+        return stats
+    
+    def _analyze_wal(self) -> tuple[Dict[str, Any], List[LogRecord]]:
+        """分析WAL文件，重建脏页表和活跃事务
+        
+        返回:
+            checkpoint_info: 检查点信息（包含脏页表和活跃事务列表）
+            active_logs: 未提交事务的日志记录（用于撤销）
+        """
+        checkpoint_info = {
+            'checkpoint_lsn': 0,
+            'dirty_page_table': {},
+            'active_transactions': [],
+            'next_lsn': 1
+        }
+        
+        active_logs = []
+        transaction_last_lsn = {}  # 跟踪每个事务的最后一条日志
+        
+        with open(self.wal_file_path, 'rb') as f:
+            while True:
+                pos = f.tell()
+                header_bytes = f.read(LogRecord.HEADER_SIZE)
+                if not header_bytes or len(header_bytes) < LogRecord.HEADER_SIZE:
+                    break
+                
+                try:
+                    lsn, tid, log_type_int, size, prev_lsn = struct.unpack(
+                        LogRecord.HEADER_FORMAT, header_bytes)
+                    
+                    payload = f.read(size) if size > 0 else b''
+                    record = LogRecord(
+                        LogType(log_type_int), tid, payload, prev_lsn
+                    )
+                    record.lsn = lsn
+                    
+                    # 跟踪事务的最后一条日志
+                    transaction_last_lsn[tid] = lsn
+                    
+                    # 如果是检查点记录，更新检查点信息
+                    if log_type_int == LogType.CHECKPOINT:
+                        try:
+                            data = json.loads(payload.decode('utf-8'))
+                            checkpoint_info.update(data)
+                            checkpoint_info['checkpoint_lsn'] = lsn
+                            checkpoint_info['next_lsn'] = data.get('next_lsn', lsn + 1)
+                            print(f"Found checkpoint at LSN {lsn}")
+                        except Exception as e:
+                            print(f"Failed to parse checkpoint at LSN {lsn}: {e}")
+                    
+                    # 收集数据修改日志（用于重做）
+                    if log_type_int in (LogType.UPDATE, LogType.INSERT, LogType.DELETE):
+                        if payload:
+                            page_id = struct.unpack('I', payload[:4])[0]
+                            # 保留最新的LSN
+                            if page_id not in checkpoint_info['dirty_page_table']:
+                                checkpoint_info['dirty_page_table'][page_id] = lsn
+                            else:
+                                checkpoint_info['dirty_page_table'][page_id] = max(
+                                    checkpoint_info['dirty_page_table'][page_id], lsn)
+                    
+                    # 根据事务最终状态决定是否收集用于撤销
+                    # 还需要检查是否在检查点的活跃事务列表中
+                    # 这里先收集所有非COMMIT/ABORT的日志
+                    if log_type_int not in (LogType.COMMIT, LogType.ABORT):
+                        active_logs.append(record)
+                    
+                except Exception as e:
+                    print(f"Error parsing log at position {pos}: {e}")
+                    break
+        
+        # 确定哪些事务最终未提交（需要撤销）
+        # 遍历所有事务，检查其最后一条日志
+        uncommitted_transactions = set()
+        for tid, last_lsn in transaction_last_lsn.items():
+            # 找到该事务最后一条日志
+            for log in active_logs:
+                if log.tid == tid and log.lsn == last_lsn:
+                    if log.type not in (LogType.COMMIT, LogType.ABORT):
+                        uncommitted_transactions.add(tid)
+                    break
+        
+        # 只保留未提交事务的日志
+        active_logs = [log for log in active_logs if log.tid in uncommitted_transactions]
+        
+        # 设置活跃事务列表（从检查点获取，并加上未提交的事务）
+        checkpoint_active = set(checkpoint_info.get('active_transactions', []))
+        checkpoint_active.update(uncommitted_transactions)
+        checkpoint_info['active_transactions'] = list(checkpoint_active)
+        
+        print(f"Analysis: {len(active_logs)} active logs (need undo), "
+              f"{len(checkpoint_info['dirty_page_table'])} dirty pages, "
+              f"{len(checkpoint_info['active_transactions'])} active transactions")
+        return checkpoint_info, active_logs
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取统计信息"""
+        stats = self.stats.copy()
+        stats['next_lsn'] = self.next_lsn
+        stats['active_transactions'] = len(self.active_transactions)
+        stats['dirty_pages'] = len(self.dirty_page_table)
+        return stats
+
+
+# 辅助函数：构造UPDATE日志的payload
+def build_update_payload(page_id: int, offset: int, old_value: bytes, new_value: bytes) -> bytes:
+    """构建UPDATE操作的payload格式：
+    page_id(4), offset(4), old_len(2), new_len(2), old_value, new_value
+    """
+    old_len = len(old_value)
+    new_len = len(new_value)
+    fmt = 'I IH H'  # page_id(uint32), offset(uint32), old_len(uint16), new_len(uint16)
+    header = struct.pack(fmt, page_id, offset, old_len, new_len)
+    return header + old_value + new_value
+
+
+def build_insert_payload(page_id: int, offset: int, data: bytes) -> bytes:
+    """构建INSERT操作的payload"""
+    fmt = 'I I H'  # page_id, offset, length
+    header = struct.pack(fmt, page_id, offset, len(data))
+    return header + data
+
+
+def build_delete_payload(page_id: int, offset: int, old_data: bytes) -> bytes:
+    """构建DELETE操作的payload（包含旧数据用于撤销）
+    page_id(4), offset(4), old_len(2), old_data
+    """
+    old_len = len(old_data)
+    fmt = 'I I H'  # page_id, offset, old_len
+    header = struct.pack(fmt, page_id, offset, old_len)
+    return header + old_data
+
+
+# 演示和测试用的模拟数据库
+class MockDatabase:
+    """模拟数据库，演示WAL工作原理"""
+    
+    def __init__(self, wal_manager: WALManager):
+        self.wal = wal_manager
+        self.data_pages: Dict[int, bytearray] = {}  # page_id -> page data
+        self.page_size = 4096
+        
+        # 初始化一些数据页
+        for i in range(10):
+            self.data_pages[i] = bytearray(b'\x00' * self.page_size)
+    
+    def update(self, page_id: int, offset: int, old_val: bytes, new_val: bytes, tid: int) -> bool:
+        """更新数据（Write-Ahead）"""
+        # 1. 先写WAL (Write-Ahead规则)
+        payload = build_update_payload(page_id, offset, old_val, new_val)
+        lsn = self.wal.append(tid, LogType.UPDATE, payload)
+        
+        # 2. 修改缓冲区中的数据（标记脏）
+        page = self.data_pages[page_id]
+        page[offset:offset+len(new_val)] = new_val
+        
+        print(f"  Updated page {page_id}, offset {offset}, LSN={lsn}")
+        return True
+    
+    def simulate_crash(self):
+        """模拟系统崩溃"""
+        print("\n" + "!"*50)
+        print("SYSTEM CRASH! WAL will be used for recovery.")
+        print("!"*50 + "\n")
+        
+        # 复制WAL文件用于恢复测试
+        import shutil
+        shutil.copy(self.wal.wal_file_path, 'wal_crash.log')
+        
+        # 清空内存数据库（模拟崩溃后内存丢失）
+        self.data_pages.clear()
+        for i in range(10):
+            self.data_pages[i] = bytearray(b'\x00' * self.page_size)
+    
+    def _apply_log(self, log: LogRecord) -> bool:
+        """应用日志到数据页（重做/重放）
+        
+        返回: 是否成功应用
+        """
+        try:
+            if log.type == LogType.UPDATE:
+                # UPDATE payload: page_id(4), offset(4), old_len(2), new_len(2), old_value, new_value
+                page_id, offset, old_len, new_len = struct.unpack('I I H H', log.payload[:12])
+                new_value = log.payload[12:12+new_len]
+                
+                if page_id in self.data_pages:
+                    page = self.data_pages[page_id]
+                    page[offset:offset+len(new_value)] = new_value
+                    return True
+            
+            elif log.type == LogType.INSERT:
+                # INSERT payload: page_id(4), offset(4), length(2), data
+                page_id, offset, length = struct.unpack('I I H', log.payload[:10])
+                data = log.payload[10:10+length]
+                
+                if page_id in self.data_pages:
+                    page = self.data_pages[page_id]
+                    page[offset:offset+len(data)] = data
+                    return True
+            
+            elif log.type == LogType.DELETE:
+                # DELETE payload: page_id(4), offset(4), old_len(2), old_data
+                page_id, offset, old_len = struct.unpack('I I H', log.payload[:10])
+                old_data = log.payload[10:10+old_len]
+                
+                if page_id in self.data_pages:
+                    page = self.data_pages[page_id]
+                    # 删除操作：清零区域
+                    page[offset:offset+old_len] = b'\x00' * old_len
+                    return True
+            
+            return False
+        except Exception as e:
+            print(f"Error applying log LSN={log.lsn}: {e}")
+            return False
+    
+    def _undo_log(self, log: LogRecord) -> bool:
+        """撤销日志（回滚未提交事务）
+        
+        返回: 是否成功撤销
+        """
+        try:
+            if log.type == LogType.UPDATE:
+                # UPDATE payload: page_id, offset, old_len, new_len, old_value, new_value
+                page_id, offset, old_len, new_len = struct.unpack('I I H H', log.payload[:12])
+                old_value = log.payload[12+new_len:12+new_len+old_len]
+                
+                if page_id in self.data_pages:
+                    page = self.data_pages[page_id]
+                    page[offset:offset+len(old_value)] = old_value
+                    return True
+            
+            elif log.type == LogType.INSERT:
+                # INSERT需要UNDO：将插入的数据区域清零
+                page_id, offset, length = struct.unpack('I I H', log.payload[:10])
+                
+                if page_id in self.data_pages:
+                    page = self.data_pages[page_id]
+                    page[offset:offset+length] = b'\x00' * length
+                    return True
+            
+            elif log.type == LogType.DELETE:
+                # DELETE需要UNDO：恢复旧数据
+                page_id, offset, old_len = struct.unpack('I I H', log.payload[:10])
+                old_data = log.payload[10:10+old_len]
+                
+                if page_id in self.data_pages:
+                    page = self.data_pages[page_id]
+                    page[offset:offset+len(old_data)] = old_data
+                    return True
+            
+            return False
+        except Exception as e:
+            print(f"Error undoing log LSN={log.lsn}: {e}")
+            return False
+    
+    def recover(self):
+        """从WAL恢复数据库状态"""
+        print("=" * 50)
+        print("Database Recovery Starting...")
+        print("=" * 50)
+        
+        if not os.path.exists(self.wal.wal_file_path):
+            print("No WAL file found, starting with empty database")
+            return {'status': 'fresh'}
+        
+        # 读取所有WAL记录
+        logs = []
+        with open(self.wal.wal_file_path, 'rb') as f:
+            while True:
+                pos = f.tell()
+                header_bytes = f.read(LogRecord.HEADER_SIZE)
+                if not header_bytes or len(header_bytes) < LogRecord.HEADER_SIZE:
+                    break
+                
+                try:
+                    lsn, tid, log_type_int, size, prev_lsn = struct.unpack(
+                        LogRecord.HEADER_FORMAT, header_bytes)
+                    
+                    payload = f.read(size) if size > 0 else b''
+                    record = LogRecord(
+                        LogType(log_type_int), tid, payload, prev_lsn
+                    )
+                    record.lsn = lsn
+                    logs.append(record)
+                    
+                except Exception as e:
+                    print(f"Error reading log at position {pos}: {e}")
+                    break
+        
+        print(f"Read {len(logs)} log records from WAL")
+        
+        # 分析阶段：确定每个事务的最终状态和脏页
+        transaction_status = {}  # tid -> 'committed'/'uncommitted'/'aborted'
+        transaction_last_lsn = {}  # tid -> last lsn
+        dirty_pages = {}  # page_id -> rec_lsn (最新的修改LSN)
+        checkpoint_lsn = 0
+        
+        # 遍历所有日志确定事务状态
+        for log in logs:
+            transaction_last_lsn[log.tid] = log.lsn
+            
+            if log.type == LogType.CHECKPOINT:
+                try:
+                    data = json.loads(log.payload.decode('utf-8'))
+                    checkpoint_lsn = log.lsn
+                    print(f"Found checkpoint at LSN {checkpoint_lsn}")
+                except:
+                    pass
+            
+            elif log.type == LogType.COMMIT:
+                transaction_status[log.tid] = 'committed'
+            
+            elif log.type == LogType.ABORT:
+                transaction_status[log.tid] = 'aborted'
+            
+            elif log.type in (LogType.UPDATE, LogType.INSERT, LogType.DELETE):
+                if log.payload:
+                    page_id = struct.unpack('I', log.payload[:4])[0]
+                    dirty_pages[page_id] = log.lsn
+        
+        # 确定未提交的事务（没有COMMIT/ABORT记录，或者在检查点后创建且未提交）
+        all_tids = set(transaction_last_lsn.keys())
+        for tid in all_tids:
+            if tid not in transaction_status:
+                transaction_status[tid] = 'uncommitted'
+        
+        print(f"Transaction status: {transaction_status}")
+        print(f"Dirty pages count: {len(dirty_pages)}")
+        
+        # 重做阶段：重放所有已提交事务的修改（幂等操作）
+        print("\nRedo phase:")
+        redo_count = 0
+        for log in logs:
+            if log.type in (LogType.UPDATE, LogType.INSERT, LogType.DELETE):
+                # 如果事务已提交，或者日志在检查点之后且我们不确定，都重做（幂等）
+                # 简化版：重做所有数据修改日志，因为它们都是幂等的
+                if self._apply_log(log):
+                    redo_count += 1
+                    print(f"  Redo LSN={log.lsn}: tid={log.tid}, type={log.type.name}")
+        
+        print(f"Redo applied {redo_count} operations")
+        
+        # 撤销阶段：回滚未提交事务（逆序）
+        print("\nUndo phase:")
+        undo_count = 0
+        
+        # 收集需要撤销的日志（未提交事务的数据修改）
+        logs_to_undo = []
+        for log in logs:
+            if log.type in (LogType.UPDATE, LogType.INSERT, LogType.DELETE):
+                if transaction_status.get(log.tid) == 'uncommitted':
+                    logs_to_undo.append(log)
+        
+        # 按LSN逆序撤销
+        logs_to_undo.sort(key=lambda x: x.lsn, reverse=True)
+        
+        for log in logs_to_undo:
+            if self._undo_log(log):
+                undo_count += 1
+                print(f"  Undo LSN={log.lsn}: tid={log.tid}, type={log.type.name}")
+        
+        print(f"Undo rolled back {undo_count} operations")
+        
+        stats = {
+            'status': 'recovered',
+            'checkpoint_lsn': checkpoint_lsn,
+            'dirty_pages_recovered': len(dirty_pages),
+            'active_txns_rolled_back': undo_count,
+            'logs_redone': redo_count,
+            'total_logs_processed': len(logs)
+        }
+        
+        print(f"\nRecovery Stats: {stats}")
+        print("=" * 50)
+        
+        return stats
+
+
+# 演示场景
+def demo_wal_basic():
+    """基础WAL演示"""
+    print("=" * 60)
+    print("WAL基础演示")
+    print("=" * 60)
+    
+    # 1. 创建WAL管理器
+    wal = WALManager('demo_wal.log')
+    wal.open()
+    
+    # 2. 开始一个事务
+    tid = 1
+    wal.begin_transaction(tid)
+    print(f"\n开始事务 T{tid}")
+    
+    # 3. 执行一些更新操作
+    print("\n执行更新操作:")
+    db = MockDatabase(wal)
+    
+    # 更新page 0
+    db.update(0, 100, b'old1', b'new1', tid)
+    
+    # 更新page 1
+    db.update(1, 200, b'old2', b'new2', tid)
+    
+    # 4. 提交事务
+    wal.commit(tid)
+    print(f"\n事务 T{tid} 已提交")
+    
+    # 5. 查看WAL统计
+    print("\nWAL统计:", wal.get_stats())
+    
+    # 6. 创建检查点
+    wal.create_checkpoint()
+    
+    wal.close()
+    print("\n演示完成！")
+
+
+def demo_wal_crash_recovery():
+    """崩溃恢复演示"""
+    print("\n" + "=" * 60)
+    print("崩溃恢复演示")
+    print("=" * 60)
+    
+    # 1. 准备数据库和WAL
+    wal = WALManager('recovery_demo_wal.log')
+    wal.open()
+    db = MockDatabase(wal)
+    
+    # 2. 事务1: 提交
+    tid1 = 1
+    wal.begin_transaction(tid1)
+    print(f"\n事务 {tid1}: 更新page 5")
+    db.update(5, 100, b'A', b'B', tid1)
+    wal.commit(tid1)
+    
+    # 3. 事务2: 未提交
+    tid2 = 2
+    wal.begin_transaction(tid2)
+    print(f"\n事务 {tid2}: 更新page 6")
+    db.update(6, 200, b'X', b'Y', tid2)
+    # 注意：没有commit
+    
+    # 4. 创建检查点
+    cp_lsn = wal.create_checkpoint()
+    
+    # 5. 模拟崩溃
+    wal.close()
+    db.simulate_crash()
+    
+    # 6. 恢复
+    # 使用新实例恢复（模拟重启）
+    wal2 = WALManager('recovery_demo_wal.log')
+    wal2.open()
+    db2 = MockDatabase(wal2)
+    
+    stats = db2.recover()
+    
+    # 7. 验证
+    print("\n恢复后验证:")
+    print(f"  Page 5 (应从T{tid1}恢复): {db2.data_pages[5][100:101]}")
+    print(f"  Page 6 (应保持原值X): {db2.data_pages[6][200:201]}")
+    
+    wal2.close()
+    
+    print("\n崩溃恢复演示完成！")
+
+
+if __name__ == '__main__':
+    # 运行演示
+    demo_wal_basic()
+    demo_wal_crash_recovery()
+    
+    print("\n" + "=" * 60)
+    print("所有演示完成！")
+    print("=" * 60)

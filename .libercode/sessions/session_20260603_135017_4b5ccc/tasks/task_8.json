@@ -1,0 +1,14 @@
+{
+  "id": 8,
+  "subject": "实现事务管理器",
+  "description": "实现事务管理核心功能：\n- 事务状态管理（active, committing, aborted, committed）\n- 事务隔离级别（可串行化或读已提交）\n- 并发控制（锁管理器，简单实现）\n- 与WAL协作（事务开始、提交、回滚日志）\n- 事务表维护\n\n依赖：WAL完成，执行引擎需要事务支持",
+  "status": "completed",
+  "blockedBy": [],
+  "blocks": [
+    9
+  ],
+  "owner": "",
+  "worktree": "",
+  "required_role": "backend",
+  "assigned_to": "txn_manager"
+}

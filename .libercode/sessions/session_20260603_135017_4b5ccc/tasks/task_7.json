@@ -1,0 +1,14 @@
+{
+  "id": 7,
+  "subject": "实现查询执行引擎",
+  "description": "实现基于AST的执行引擎：\n- 各种SQL语句的执行逻辑（SELECT, INSERT, UPDATE, DELETE）\n- 表达式求值\n- 简单WHERE条件过滤\n- 与存储引擎、索引管理器、WAL交互\n- 返回查询结果\n\n依赖：SQL解析器、存储引擎、WAL、索引管理器",
+  "status": "completed",
+  "blockedBy": [],
+  "blocks": [
+    9
+  ],
+  "owner": "",
+  "worktree": "",
+  "required_role": "backend",
+  "assigned_to": "executor"
+}

@@ -1,0 +1,15 @@
+{
+  "id": 5,
+  "subject": "实现B+树索引管理器",
+  "description": "实现B+树索引用于快速查询：\n- B+树节点结构（Internal节点和Leaf节点）\n- B+树的插入、删除、查找操作\n- 索引与数据页的关联（构建键值到记录的映射）\n- 索引的持久化存储\n- 遍历支持（范围查询）\n依赖：存储引擎、缓冲区管理器完成",
+  "status": "completed",
+  "blockedBy": [],
+  "blocks": [
+    7,
+    9
+  ],
+  "owner": "",
+  "worktree": "",
+  "required_role": "backend",
+  "assigned_to": "index_manager"
+}
