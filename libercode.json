@@ -1,0 +1,9 @@
+{
+  "debug": false,
+  "status_refresh": 10.0,
+  "session_auto_save": true,
+  "session_auto_save_interval": 1.0,
+  "dangerous_command_policy": "confirm",
+  "dangerous_command_patterns_override": null,
+  "dangerous_command_patterns_extra": []
+}

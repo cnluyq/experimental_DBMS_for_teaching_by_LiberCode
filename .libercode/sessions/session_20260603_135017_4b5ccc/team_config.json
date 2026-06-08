@@ -1,4 +1,15 @@
 {
   "team_name": "default",
-  "members": []
+  "members": [
+    {
+      "name": "executor",
+      "role": "backend",
+      "status": "working"
+    },
+    {
+      "name": "integration_engineer",
+      "role": "backend",
+      "status": "working"
+    }
+  ]
 }

@@ -88,6 +88,10 @@ class Executor:
             # table_managers不共享，每个context独立（事务隔离）
         
         # 根据AST类型分发
+        # 对于需要操作表的DML语句，先检查表是否存在
+        if isinstance(ast, (SelectNode, ASTInsertNode, ASTUpdateNode, ASTDeleteNode)):
+            self._check_table_exists(ast.table_name, context)
+        
         if isinstance(ast, SelectNode):
             plan = self._create_select_plan(ast)
         elif isinstance(ast, ASTInsertNode):
@@ -222,6 +226,20 @@ class Executor:
     def _create_delete_plan(self, ast: ASTDeleteNode) -> ExecNode:
         """为DELETE语句创建执行计划"""
         return DeleteNode(ast.table_name, ast.where_clause)
+    
+    def _check_table_exists(self, table_name: str, context: ExecutionContext):
+        """
+        检查表是否存在于系统表中
+        
+        Args:
+            table_name: 表名
+            context: 执行上下文
+            
+        Raises:
+            ValueError: 如果表不存在
+        """
+        if table_name not in context.table_metadata:
+            raise ValueError(f"Table '{table_name}' does not exist")
     
     def _handle_begin(self):
         """处理BEGIN语句"""

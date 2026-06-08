@@ -75,7 +75,7 @@ class ExecutionContext:
             raise RuntimeError("存储引擎未集成的表管理功能")
         
         if table_name not in self.table_metadata:
-            raise ValueError(f"表 '{table_name}' 不存在")
+            raise ValueError(f"Table '{table_name}' does not exist")
         
         return self.table_managers[table_name]
     
@@ -125,9 +125,15 @@ class ExecutionContext:
             
         Returns:
             记录迭代器
+            
+        Raises:
+            ValueError: 如果表不存在
         """
         if self.table_storage is None:
             raise RuntimeError("存储引擎未集成的表管理功能")
+        
+        if table_name not in self.table_metadata:
+            raise ValueError(f"表 '{table_name}' 不存在")
         
         manager = self.table_managers.get(table_name)
         if manager is None:
