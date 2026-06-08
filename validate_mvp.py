@@ -58,7 +58,13 @@ def validate_mvp():
     leaf_count = 0
     while leaf:
         chain_keys.extend(leaf.keys)
-        next_page_id = getattr(leaf.next_leaf, 'page_id', None) if leaf.next_leaf else None
+        # next_leaf可能是LeafNode对象或int page_id
+        if leaf.next_leaf is None:
+            next_page_id = None
+        elif isinstance(leaf.next_leaf, int):
+            next_page_id = leaf.next_leaf
+        else:
+            next_page_id = getattr(leaf.next_leaf, 'page_id', None)
         print(f'   leaf {leaf_count}: page_id={leaf.page_id}, keys={leaf.keys}, next_page_id={next_page_id}')
         if next_page_id:
             leaf = tree._load_node(next_page_id)

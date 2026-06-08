@@ -221,9 +221,10 @@ class LeafNode(BPlusNode):
         new_node.values = self.values[mid:]
         
         # 设置兄弟指针
+        # 注意：next_leaf可能是LeafNode对象或page_id整数（从磁盘加载时）
         new_node.next_leaf = self.next_leaf
         new_node.prev_leaf = self
-        if self.next_leaf:
+        if self.next_leaf and isinstance(self.next_leaf, LeafNode):
             self.next_leaf.prev_leaf = new_node
         self.next_leaf = new_node
         

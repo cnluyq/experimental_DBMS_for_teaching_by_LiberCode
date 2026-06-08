@@ -179,15 +179,17 @@ storage.close()
 pytest tests/test_persistent_bplus_tree.py -v
 ```
 
-**当前状态（2025-06-05）：**
-- ✅ 基本功能测试：7/7 通过
-  - 单插入
-  - 多插入
+**当前状态（2025-06-06）：**
+- ✅ 基本功能测试：全部通过
+  - 单插入 / 多插入
   - 重复键更新
   - 顺序插入（触发分裂）
   - 随机插入
-  - 范围查询
-  - 优雅关闭
+  - 范围查询（range_search）
+  - 优雅关闭（shutdown）
+- ✅ **Bug修复**：size 和 root_page_id 持久化（通过元数据页面）
+- ✅ **Bug修复**：next_leaf 序列化兼容 LeafNode/int 混合类型
+- ✅ **Bug修复**：shutdown()后调用`buffer.flush_all()`确保数据实际写盘
 - ⏸ 删除功能暂停开发（MVP不包含）
 
 ## 接口对齐说明

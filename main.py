@@ -20,7 +20,32 @@ sys.path.insert(0, str(Path(__file__).parent / 'src'))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from integration.coordinator import create_database, DatabaseConfig
-from parser import parse, TokenizerError, ParserError
+from parser.parser import parse
+from parser.tokenizer import TokenizerError
+from parser.parser import ParserError
+
+
+def _display_single_result(result, quiet=False):
+    """显示单条命令结果"""
+    if result.success:
+        # 判断是否是真正的数据行
+        has_data_rows = (
+            result.rows and 
+            len(result.rows) > 0 and
+            isinstance(result.rows[0], dict) and
+            not ('record_id' in result.rows[0] and 'rows_affected' in result.rows[0])
+        )
+        
+        if has_data_rows:
+            # 有真正数据行 - 以表格形式显示
+            print()
+            result.print_table()
+        elif result.rows_affected:
+            print(f"Rows affected: {result.rows_affected}")
+        elif result.message and not quiet:
+            print(result.message)
+    else:
+        print(f"Error: {result.error or result.message}")
 
 
 class REPL:
@@ -103,37 +128,51 @@ class REPL:
     
     def _display_result(self, result):
         """显示查询结果"""
-        # INSERT/UPDATE/DELETE
-        if result.rows_affected is not None:
+        # 检查是否有特殊的统计行（可能是DML返回的元数据）
+        # 例如 INSERT 可能返回 {'record_id': 1, 'rows_affected': 1}
+        # 这种情况下我们只显示成功消息
+        
+        if result.rows and len(result.rows) == 1:
+            row = result.rows[0]
+            if isinstance(row, dict):
+                # 检查是否是统计信息行
+                if 'record_id' in row or 'rows_affected' in row:
+                    affected = row.get('rows_affected', row.get('record_id', 1))
+                    print(f"成功: {affected} 行受影响")
+                    if result.message:
+                        print(f"  {result.message}")
+                    return
+        
+        # SELECT结果 - 表格形式显示
+        if result.rows:
+            self._print_table(result)
+            return
+        
+        # INSERT/UPDATE/DELETE - 显示影响行数
+        if result.rows_affected:
             print(f"成功: {result.rows_affected} 行受影响")
             if result.message:
                 print(f"  {result.message}")
-            return
-        
-        # SELECT结果
-        if not result.rows:
-            print("查询成功 (0 行)")
-            return
-        
-        # 提取列名和数据
-        if isinstance(result.rows, list) and len(result.rows) > 0:
-            if isinstance(result.rows[0], dict):
-                columns = result.columns or list(result.rows[0].keys())
-            else:
-                columns = result.columns or [f"col{i}" for i in range(len(result.rows[0]))]
+        elif result.message:
+            print(result.message)
         else:
-            columns = result.columns or []
+            print("查询成功")
+    
+    def _print_table(self, result):
+        """以表格形式打印结果"""
+        rows = result.rows
+        columns = result.columns or (list(rows[0].keys()) if rows else [])
+        
+        if not columns:
+            print("Empty result")
+            return
         
         # 计算列宽
         col_widths = {col: len(str(col)) for col in columns}
-        for row in result.rows:
+        for row in rows:
             if isinstance(row, dict):
                 for col in columns:
                     col_widths[col] = max(col_widths[col], len(str(row.get(col, ''))))
-            else:
-                for i, val in enumerate(row):
-                    if i < len(columns):
-                        col_widths[columns[i]] = max(col_widths[columns[i]], len(str(val)))
         
         # 打印表头
         header = " | ".join(str(col).ljust(col_widths[col]) for col in columns)
@@ -141,14 +180,14 @@ class REPL:
         print("-" * len(header))
         
         # 打印数据行
-        for row in result.rows:
+        for row in rows:
             if isinstance(row, dict):
                 line = " | ".join(str(row.get(col, '')).ljust(col_widths[col]) for col in columns)
             else:
-                line = " | ".join(str(val).ljust(col_widths[columns[i]]) for i, val in enumerate(row))
+                line = " | ".join(str(v).ljust(col_widths[columns[i]]) for i, v in enumerate(row))
             print(line)
         
-        print(f"\n({len(result.rows)} 行)")
+        print(f"\n({len(rows)} 行)")
     
     def _handle_meta_command(self, cmd: str):
         """处理元命令"""
@@ -238,33 +277,75 @@ class REPL:
 
 def main():
     """主函数"""
-    # 解析命令行参数
-    data_dir = "./data"
+    import argparse
     
-    if len(sys.argv) > 1:
-        data_dir = sys.argv[1]
+    parser = argparse.ArgumentParser(description='ProjoDB - 实验性教学数据库')
+    parser.add_argument('data_dir', nargs='?', default='./data', help='数据目录')
+    parser.add_argument('-e', '--execute', help='执行单条SQL并退出')
+    parser.add_argument('--no-wal', action='store_true', help='禁用WAL')
+    parser.add_argument('-q', '--quiet', action='store_true', help='静默模式')
+    parser.add_argument('--memory', action='store_true', help='使用内存存储')
     
-    # 确保数据目录存在
-    os.makedirs(data_dir, exist_ok=True)
+    args = parser.parse_args()
+    
+    # 确定存储类型
+    storage_type = 'memory' if args.memory else 'file'
     
     # 创建数据库配置
     config = DatabaseConfig(
-        data_dir=data_dir,
-        storage_type='file',
+        data_dir=args.data_dir,
+        storage_type=storage_type,
         buffer_pool_size=64,
-        wal_enabled=True,
+        wal_enabled=not args.no_wal,
         autocommit=True,
-        log_level='WARNING'
+        log_level='WARNING' if args.quiet else 'INFO'
     )
     
-    print("正在初始化数据库...")
+    # 确保数据目录存在
+    os.makedirs(args.data_dir, exist_ok=True)
     
     try:
         db = create_database(config)
-        print("数据库初始化成功！\n")
         
-        repl = REPL(db)
-        repl.run()
+        if args.execute:
+            # 单命令模式
+            if not args.quiet:
+                print(f"Executing: {args.execute}")
+            
+            try:
+                # 支持多语句（以;分隔）
+                statements = args.execute.split(';')
+                valid_stmts = [s.strip() for s in statements if s.strip()]
+                
+                for i, stmt in enumerate(valid_stmts):
+                    ast = parse(stmt + ';')
+                    result = db.executor.execute(ast)
+                    
+                    # 只对最后一个语句显示详细结果
+                    if i == len(valid_stmts) - 1:
+                        _display_single_result(result, args.quiet)
+                    else:
+                        # 静默显示中间结果
+                        if result.rows_affected and not args.quiet:
+                            print(f"  ↳ {result.rows_affected} rows affected")
+                        elif result.message and not args.quiet:
+                            print(f"  ↳ {result.message}")
+                    
+            except Exception as e:
+                print(f"SQL Error: {e}")
+                import traceback
+                traceback.print_exc()
+                sys.exit(1)
+            finally:
+                db.shutdown()
+        else:
+            # REPL模式
+            if not args.quiet:
+                print("正在初始化数据库...")
+                print("数据库初始化成功！\n")
+            
+            repl = REPL(db)
+            repl.run()
         
     except Exception as e:
         print(f"启动失败: {e}")

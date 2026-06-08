@@ -133,7 +133,7 @@ class InMemoryStorage(StorageEngine):
     def __init__(self, page_size: int = 4096):
         self.page_size = page_size
         self.pages: Dict[int, bytes] = {}
-        self.next_page_id = 0
+        self.next_page_id = 1  # 从1开始，page_id=0保留给元数据
     
     def page_read(self, page_id: int) -> Optional[bytes]:
         return self.pages.get(page_id)

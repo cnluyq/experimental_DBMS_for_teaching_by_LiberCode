@@ -15,14 +15,15 @@ MAGIC_NUMBER = 0x424C5553  # 'BLUS' or simpler: use 0xB455 (or just choose 0x123
 # 使用一个简单的整数作为标识
 MAGIC_NUMBER = 0xBADF00D  # "BAD F00D" - a fun magic number
 
-# 头部格式（固定编码）：
+# 头部格式（无对齐填充，严格packed）：
 # magic: I (4 bytes)
 # node_type: B (1 byte) - 1=INTERNAL, 2=LEAF
 # key_count: H (2 bytes) - 键数量
 # parent_id: I (4 bytes) - 父节点page_id，0表示无
 # reserved: I (4 bytes) - 保留字段
-HEADER_FORMAT = 'IBHII'
-HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
+# 使用 = 前缀禁用对齐填充（native standard size, no alignment）
+HEADER_FORMAT = '=IBHII'
+HEADER_SIZE = struct.calcsize(HEADER_FORMAT)  # 固定15字节
 
 # 键和值采用固定长度编码（简化教学）
 KEY_SIZE = 8  # 8字节整数或短字符串
@@ -79,16 +80,30 @@ class BPlusTreeSerializer:
                 offset += VALUE_SIZE
             
             # 保存next_leaf的page_id（如果有）
-            next_page_id = getattr(leaf.next_leaf, 'page_id', 0) if leaf.next_leaf else 0
+            # next_leaf可能是LeafNode对象或int page_id
+            next_leaf = leaf.next_leaf
+            if next_leaf is None:
+                next_page_id = 0
+            elif isinstance(next_leaf, int):
+                next_page_id = next_leaf
+            else:
+                next_page_id = getattr(next_leaf, 'page_id', 0)
             struct.pack_into('I', data, offset, next_page_id)
             offset += 4
         else:
             internal = node  # type: InternalNode
             # 序列化子节点page_id（num_keys + 1个）
             for child in internal.children:
-                child_page_id = getattr(child, 'page_id', 0)
+                # child 可能是 BPlusNode 对象或者 int(page_id)
+                if isinstance(child, int):
+                    child_page_id = child
+                else:
+                    child_page_id = getattr(child, 'page_id', 0)
                 struct.pack_into('I', data, offset, child_page_id)
                 offset += 4
+                
+            # 确保反序列化时正确设置子节点 parent
+            # （注意：反序列化时 children 存储为 page_id 整数，通过 _reconnect_children 重建）
         
         # 填充剩余空间
         # offset 应该是 <= PAGE_SIZE
@@ -571,8 +586,9 @@ class PersistentBPlusTree:
         Returns:
             成功返回True，失败返回False（如键已存在）
         """
-        # 1. 加载根节点
-        if self.root_page_id is None or self.root_page_id == 0:
+        # 1. 确保根节点存在（只有在首次调用时才创建）
+        # 注意：root_page_id == 0 是有效页面ID，所以用 None 作为未初始化标志
+        if self.root_page_id is None:
             self.root_page_id = self._create_new_root()
         
         root = self._load_node(self.root_page_id)
@@ -756,6 +772,9 @@ class PersistentBPlusTree:
         
         # 6. 检查根节点是否需要调整
         self._adjust_root()
+        
+        # 7. 保存元数据（持久化size）
+        self._save_metadata()
         
         return True
     
@@ -1078,10 +1097,17 @@ class PersistentBPlusTree:
         pass
     
     def shutdown(self):
-        """关闭索引（写回所有缓存节点）"""
+        """关闭索引（写回所有缓存节点和元数据）"""
+        # 刷新所有节点到缓冲区
         for page_id, node in list(self.node_cache.items()):
             self._flush_node(node)
         self.node_cache.clear()
+        
+        # 实际写盘！确保数据持久化
+        self.buffer.flush_all()
+        
+        # 确保元数据已保存
+        self._save_metadata()
 
 
 if __name__ == "__main__":

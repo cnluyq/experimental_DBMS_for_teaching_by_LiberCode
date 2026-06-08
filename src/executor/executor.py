@@ -135,21 +135,34 @@ class Executor:
         
         # 执行计划
         rows = []
-        affected_rows = 0
+        affected_rows = None  # SELECT默认None，DML语句覆盖
         try:
             for row in plan.execute(context):
                 rows.append(row)
                 # 对于DML，计划节点返回的行可能包含rows_affected字段
                 if 'rows_affected' in row:
-                    affected_rows = row['rows_affected']  # 最后一个值会覆盖，但通常只有一个结果行
+                    affected_rows = row['rows_affected']
             
             # 获取统计信息
             stats = context.get_stats()
             
-            # 对于DML语句，优先使用节点返回的affected_rows
-            # 对于SELECT，使用rows_read统计
-            if affected_rows == 0 and stats.get('rows_written', 0) > 0:
-                affected_rows = stats['rows_written']
+            # 获取影响行数
+            # 如果计划节点返回了affected_rows（通常DML会返回），使用它
+            # 否则根据语句类型确定：
+            # - SELECT: 返回查询结果的行数
+            # - DML (INSERT/UPDATE/DELETE): 从stats获取
+            if affected_rows is None:
+                if isinstance(ast, SelectNode):
+                    # SELECT语句，返回结果行数
+                    affected_rows = len(rows)
+                elif stats.get('rows_written', 0) > 0:
+                    affected_rows = stats['rows_written']
+                elif stats.get('rows_deleted', 0) > 0:
+                    affected_rows = stats['rows_deleted']
+                elif stats.get('rows_updated', 0) > 0:
+                    affected_rows = stats['rows_updated']
+                else:
+                    affected_rows = 0
             
             return ResultSet(
                 rows=rows,
